@@ -109,13 +109,16 @@
         // ==========================================
         // 2. TẠO HOLOGRAM TỪ TEXT & ẢNH
         // ==========================================
-        // Hàm tạo text (như cũ)
+        // Hàm tạo text (ĐÃ SỬA MÀU LỄ HỘI)
         function createTextPositions(text, pCount, isHeart = false) {
             const canvas = document.createElement('canvas');
             const size = 1024; canvas.width = size; canvas.height = size;
             const ctx = canvas.getContext('2d');
             ctx.fillStyle = '#000000'; ctx.fillRect(0,0,size,size);
-            ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            
+            // Dùng màu trắng để vẽ lên canvas lấy vị trí (màu sắc thật sẽ random bên dưới)
+            ctx.fillStyle = '#ffffff'; 
+            ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
             
             if (isHeart) {
                 ctx.font = '800px sans-serif'; ctx.fillText('♥', size/2, size/2 + 50);
@@ -127,7 +130,33 @@
                     ctx.fillText(text, size/2, size/2);
                 }
             }
-            return scanPixelsAndColors(ctx, size, pCount);
+            
+            // Lấy dữ liệu vị trí và màu gốc (đang là trắng)
+            const data = scanPixelsAndColors(ctx, size, pCount);
+
+            // --- ĐOẠN CODE THÊM MỚI: TRỘN MÀU LỄ HỘI ---
+            // Danh sách màu: Vàng, Cam, Trắng, Đỏ, Hồng (Hệ màu 0.0 -> 1.0)
+            const festivalColors = [
+                {r:1.0, g:0.84, b:0.0}, // Vàng (Gold)
+                {r:1.0, g:0.64, b:0.0}, // Cam (Orange)
+                {r:1.0, g:1.0,  b:1.0}, // Trắng
+                {r:1.0, g:0.0,  b:0.2}, // Đỏ
+                {r:1.0, g:0.41, b:0.71} // Hồng (Pink)
+            ];
+
+            // Gán lại màu ngẫu nhiên cho từng hạt của chữ
+            for(let i=0; i < pCount; i++) {
+                // Chọn ngẫu nhiên 1 màu
+                const rnd = festivalColors[Math.floor(Math.random() * festivalColors.length)];
+                
+                // Gán vào mảng màu (R, G, B)
+                data.colors[i*3]     = rnd.r; 
+                data.colors[i*3 + 1] = rnd.g; 
+                data.colors[i*3 + 2] = rnd.b; 
+            }
+            // ------------------------------------------
+
+            return data;
         }
 
         // Hàm tạo vị trí + MÀU SẮC từ URL Ảnh (ĐÃ SỬA)
@@ -206,110 +235,87 @@
 
         // ==========================================
         // ==========================================
-        // 3. TẠO HẠT & DATA (ĐÃ SỬA LỖI & THÊM MÀU)
+        // 3. TẠO HẠT & DATA (CÓ HẠT CHÂU & TUYẾT RƠI)
         // ==========================================
-        const particleCount = 45000; 
+        const particleCount = 100000; 
+        
         const geometry = new THREE.BufferGeometry();
         const positions = new Float32Array(particleCount * 3);
         const colors = [];
 
-        // Mảng vị trí cơ bản
+        // Các mảng đích
         const posSphere = new Float32Array(particleCount * 3);
         const posTree = new Float32Array(particleCount * 3);
-        
-        // Mảng màu gốc (để lưu màu cây thông)
         const baseColors = new Float32Array(particleCount * 3);
+        
+        // Biến đánh dấu vị trí bắt đầu của các hạt làm tuyết (để điều khiển rơi)
+        let snowStartIndex = 0; 
 
-        // Helper: Lấy cả vị trí và màu từ text
+        // Helper load text
         function initTextData(text, count, isHeart) {
-            // Lưu ý: Đảm bảo bạn đã sửa hàm createTextPositions ở Bước 1 trước đó
             const data = createTextPositions(text, count, isHeart); 
             return { pos: data.positions, col: data.colors };
         }
 
-        // --- 1. KHỞI TẠO DỮ LIỆU CÁC VẬT PHẨM ---
-        
-        // Quà Trái (GIFT_L)
+        // --- 1. DATA VẬT PHẨM ---
         const dGiftL = initTextData("I LOVE YOU", particleCount, false);
-        const posTargetGiftL = dGiftL.pos;
-        const colTargetGiftL = dGiftL.col;
+        const posTargetGiftL = dGiftL.pos; const colTargetGiftL = dGiftL.col;
 
-        // Quà Giữa (GIFT_C)
         const dGiftC = initTextData("MERRY XMAS", particleCount, false);
-        const posTargetGiftC = dGiftC.pos;
-        const colTargetGiftC = dGiftC.col;
+        const posTargetGiftC = dGiftC.pos; const colTargetGiftC = dGiftC.col;
 
-        // Quà Phải (GIFT_R - Heart)
         const dGiftR = initTextData("", particleCount, true);
-        const posTargetGiftR = dGiftR.pos;
-        const colTargetGiftR = dGiftR.col;
+        const posTargetGiftR = dGiftR.pos; const colTargetGiftR = dGiftR.col;
         
-        // Thư 1 & 2 (LETTER - Ảnh) -> Khởi tạo mảng rỗng trước
         const posTargetLetter1 = new Float32Array(particleCount * 3); 
         const colTargetLetter1 = new Float32Array(particleCount * 3);
-
         const posTargetLetter2 = new Float32Array(particleCount * 3);
         const colTargetLetter2 = new Float32Array(particleCount * 3);
 
-        // --- 2. XỬ LÝ FALLBACK & LOAD ẢNH ---
-        
-        // Copy dữ liệu mặc định (tránh lỗi khi ảnh chưa tải xong)
-        // Lấy form của Quà Giữa làm mặc định
         for(let i=0; i<particleCount*3; i++) {
-            // Copy vị trí
-            posTargetLetter1[i] = posTargetGiftC[i];
-            posTargetLetter2[i] = posTargetGiftC[i];
-            
-            // Mặc định màu trắng cho ảnh khi chưa load
-            colTargetLetter1[i] = 1.0; 
-            colTargetLetter2[i] = 1.0;
+            posTargetLetter1[i] = posTargetGiftC[i]; posTargetLetter2[i] = posTargetGiftC[i];
+            colTargetLetter1[i] = 1.0; colTargetLetter2[i] = 1.0;
         }
-
-        // LOAD ẢNH (Thay link ảnh của bạn vào đây)
+        
         const imgUrl1 = "https://raw.githubusercontent.com/Tuna195/merryChristmas2025/c0137de89120f3f2722458b53dc858650fc56218/assets/anhchristmas-removebg-preview.png"; 
         const imgUrl2 = "https://raw.githubusercontent.com/Tuna195/merryChristmas2025/f5ceb00e1d04d04d2bf4835b5be63dcc6b2edf7d/anhchristmas.jpg"; 
-
-        // Gọi hàm load ảnh mới (có truyền mảng màu)
+        
         createImagePositions(imgUrl1, particleCount, posTargetLetter1, colTargetLetter1);
         createImagePositions(imgUrl2, particleCount, posTargetLetter2, colTargetLetter2);
 
-
-        // --- 3. TẠO HẠT BAN ĐẦU (ADD POINT) ---
+        // --- 2. XÂY DỰNG SCENE ---
         let pIdx = 0;
         const C = {
             white: new THREE.Color(0xffffff), gold: new THREE.Color(0xffcc00),
             red: new THREE.Color(0xff0033), green: new THREE.Color(0x00aa00),
             blue: new THREE.Color(0x0088ff), tree: new THREE.Color(0x004400),
             brown: new THREE.Color(0x8B4513), orange: new THREE.Color(0xff6600),
-            paper: new THREE.Color(0xffffee)
+            paper: new THREE.Color(0xffffee), snow: new THREE.Color(0xaaddff)
         };
 
         function addPoint(x, y, z, col) {
-            // Vị trí Cây
+            if(pIdx >= particleCount) return;
+            // Gán vị trí Cây
             posTree[pIdx*3] = x; posTree[pIdx*3+1] = y; posTree[pIdx*3+2] = z;
             
-            // Vị trí Cầu (Mặc định)
+            // Gán vị trí Cầu
             const u=Math.random(), v=Math.random();
             const th=2*Math.PI*u, ph=Math.acos(2*v-1);
-            const r=20+Math.random()*15;
+            const r=20+Math.random()*15 * 0.6;
             posSphere[pIdx*3] = r*Math.sin(ph)*Math.cos(th);
             posSphere[pIdx*3+1] = r*Math.sin(ph)*Math.sin(th);
             posSphere[pIdx*3+2] = r*Math.cos(ph);
 
-            // Gán vị trí ban đầu
+            // Khởi tạo
             positions[pIdx*3] = posSphere[pIdx*3];
             positions[pIdx*3+1] = posSphere[pIdx*3+1];
             positions[pIdx*3+2] = posSphere[pIdx*3+2];
 
-            // Gán màu
             colors.push(col.r, col.g, col.b);
-            
             pIdx++;
         }
 
-        // --- 4. VẼ CÁC ĐỐI TƯỢNG (Cây, Người tuyết...) ---
-        
-        // Cây thông
+        // A. CÂY THÔNG
         for(let i=0;i<24000;i++){
             const y=(Math.random()*40)-20, r=((20-y)/3)*1.32, a=Math.random()*Math.PI*2, rad=Math.random()*r;
             const rnd=Math.random(); let c;
@@ -319,41 +325,38 @@
             addPoint(rad*Math.cos(a), y*1.1, rad*Math.sin(a), c);
         }
 
-        // Người tuyết
+        // B. NGƯỜI TUYẾT
         const smX=14, smZ=5, smYBase=-20;
-        for(let i=0;i<2500;i++){ 
+        for(let i=0;i<5000;i++){ 
             const p=Math.random(); let r,cy; if(p<0.45){r=3.5;cy=smYBase+3;}else if(p<0.8){r=2.5;cy=smYBase+7.5;}else{r=1.8;cy=smYBase+11;}
-            const u=Math.random(),v=Math.random(),th=2*Math.PI*u,ph=Math.acos(2*v-1), rad=r*(0.8+Math.random()*0.2);
+            const u=Math.random(),v=Math.random(),th=2*Math.PI*u,ph=Math.acos(2*v-1), rad=r*(0.85+Math.random()*0.15); 
             addPoint(smX+rad*Math.sin(ph)*Math.cos(th), cy+rad*Math.sin(ph)*Math.sin(th), smZ+rad*Math.cos(ph), C.white);
         }
-        // Tay người tuyết
         for(let side=-1; side<=1; side+=2) { 
-            for(let i=0; i<200; i++) { 
-                const t=i/200, sx=smX+side*2.5, sy=smYBase+8, sz=smZ, ex=smX+side*6, ey=smYBase+10, ez=smZ+1;
-                const j=()=>(Math.random()-0.5)*0.3;
-                addPoint(THREE.MathUtils.lerp(sx,ex,t)+j(), THREE.MathUtils.lerp(sy,ey,t)+j(), THREE.MathUtils.lerp(sz,ez,t)+j(), C.brown);
+            for(let i=0; i<400; i++) { 
+                const t=i/400, sx=smX+side*2.5, sy=smYBase+8, sz=smZ, ex=smX+side*6, ey=smYBase+10, ez=smZ+1;
+                addPoint(THREE.MathUtils.lerp(sx,ex,t)+(Math.random()-0.5)*0.2, THREE.MathUtils.lerp(sy,ey,t)+(Math.random()-0.5)*0.2, THREE.MathUtils.lerp(sz,ez,t)+(Math.random()-0.5)*0.2, C.brown);
             }
         }
-        // Mũi người tuyết
-        for(let i=0;i<150;i++){ 
+        for(let i=0;i<300;i++){ 
             const t=Math.random(), h=t*1.5, r=(1-t)*0.3, a=Math.random()*Math.PI*2, rad=Math.random()*r;
             addPoint(smX+rad*Math.cos(a), smYBase+11+rad*Math.sin(a), smZ+1.8+h, C.orange);
         }
 
-        // --- 5. TẠO HẠT CHO VẬT PHẨM ---
-        // (Để tạo hiệu ứng các hạt vật phẩm bay về cầu khi chạm)
-        
+        // C. VẬT PHẨM
         function addGift(key, gx, gz, s, c, cnt) {
             const start = pIdx;
             const gy=-20+s/2;
             for(let i=0;i<cnt;i++){
                 let fx=(Math.random()-0.5)*s, fy=(Math.random()-0.5)*s, fz=(Math.random()-0.5)*s;
-                if(Math.random()>0.2){const ax=Math.floor(Math.random()*3); if(ax==0)fx=s/2*(Math.random()>0.5?1:-1);else if(ax==1)fy=s/2*(Math.random()>0.5?1:-1);else fz=s/2*(Math.random()>0.5?1:-1);}
+                if(Math.random()>0.1){ 
+                    const ax=Math.floor(Math.random()*3); 
+                    if(ax==0)fx=s/2*(Math.random()>0.5?1:-1); else if(ax==1)fy=s/2*(Math.random()>0.5?1:-1); else fz=s/2*(Math.random()>0.5?1:-1);
+                }
                 addPoint(gx+fx, gy+fy, gz+fz, c);
             }
             STATE.itemRanges[key] = [start, pIdx - 1];
         }
-
         function addLetter(key, lx, lz, w, h, cnt) {
             const start = pIdx;
             const ly = -19.5;
@@ -361,30 +364,67 @@
                 const dx = (Math.random()-0.5)*w;
                 const dz = (Math.random()-0.5)*h;
                 addPoint(lx+dx, ly + (Math.random()*0.5), lz+dz, C.paper);
-                if(i < cnt/10) addPoint(lx+(Math.random()-0.5)*1, ly+0.6, lz+(Math.random()-0.5)*1, C.red);
+                if(i < cnt/8) addPoint(lx+(Math.random()-0.5)*1, ly+0.6, lz+(Math.random()-0.5)*1, C.red);
             }
             STATE.itemRanges[key] = [start, pIdx - 1];
         }
+        addGift('gift_l', -12, 0, 4, C.green, 3000);
+        addLetter('letter_1', -7, 4, 5, 3.5, 3000);
+        addGift('gift_c', -2, 10, 3.5, C.red, 3000);
+        addLetter('letter_2', 4, 5, 5, 3.5, 3000);
+        addGift('gift_r', 10, 8, 4, C.blue, 3000);
 
-        // Sắp xếp vật phẩm
-        addGift('gift_l', -12, 0, 4, C.green, 1200);
-        addLetter('letter_1', -7, 4, 5, 3.5, 1200);
-        addGift('gift_c', -2, 10, 3.5, C.red, 1200);
-        addLetter('letter_2', 4, 5, 5, 3.5, 1200);
-        addGift('gift_r', 10, 8, 4, C.blue, 1200);
-
-
-        // --- 4. Châu (Ornaments) - ĐIỀU CHỈNH: Rải đều hơn ---
-        for(let k=0;k<35;k++){ // Tăng số lượng chùm
-            // Điều chỉnh oy: Từ -15 (gần gốc) lên đến 15 (ngọn)
+        // --- D. CHÂU (ORNAMENTS) - ĐÃ THÊM LẠI ---
+        for(let k=0;k<35;k++){ 
             const oy=Math.random()*30 - 15; 
-            const or=((20-oy)/3)*1.1; // Bán kính vòng cây tại độ cao đó
+            const or=((20-oy)/3)*1.1; 
             const oa=Math.random()*Math.PI*2; 
             const ox=Math.cos(oa)*or, oz=Math.sin(oa)*or;
-            
             for(let i=0;i<80;i++){
                 const u=Math.random(),v=Math.random(),th=2*Math.PI*u,ph=Math.acos(2*v-1),rad=0.6*Math.random();
                 addPoint(ox+rad*Math.sin(ph)*Math.cos(th), oy+rad*Math.sin(ph)*Math.sin(th), oz+rad*Math.cos(ph), (Math.random()>0.5?C.gold:C.red).clone().multiplyScalar(1.5));
+            }
+        }
+
+        // --- E. BACKGROUND: TUYẾT RƠI (Hạt dư thừa) ---
+        // Lưu lại vị trí bắt đầu của tuyết
+        snowStartIndex = pIdx; 
+        console.log("Snow starts at index:", snowStartIndex);
+
+        function addSnowflake(cx, cy, cz, radius) {
+            const color = C.snow;
+            for(let k=0; k<6; k++) {
+                const angle = (k * 60) * Math.PI / 180;
+                const dirX = Math.cos(angle);
+                const dirY = Math.sin(angle);
+                for(let i=0; i<15; i++) {
+                    const r = (i/15) * radius;
+                    addPoint(cx + r*dirX, cy + r*dirY, cz, color);
+                }
+                for(let i=5; i<12; i+=3) { 
+                    const r = (i/15) * radius;
+                    const branchLen = radius * 0.3 * (1 - i/15);
+                    addPoint(cx + r*dirX + branchLen*dirY, cy + r*dirY - branchLen*dirX, cz, color);
+                    addPoint(cx + r*dirX - branchLen*dirY, cy + r*dirY + branchLen*dirX, cz, color);
+                }
+            }
+        }
+
+        let safeLoop = 0;
+        while(pIdx < particleCount && safeLoop < 10000) {
+            safeLoop++;
+            const x = (Math.random() - 0.5) * 140; 
+            const z = (Math.random() - 0.5) * 100; 
+            const dist = Math.sqrt(x*x + z*z);
+            if(dist < 22) continue; 
+
+            const y = (Math.random() - 0.5) * 90; 
+            const size = 0.8 + Math.random() * 1.5;
+            
+            if(pIdx + 150 < particleCount) {
+                addSnowflake(x, y, z, size);
+            } else {
+                addPoint(x, y, z, C.white);
             }
         }
 
@@ -443,9 +483,9 @@
                 if (currentlyPinching && isHandOpen) {
                     // CHIA 5 VÙNG (0.0 -> 1.0)
                     let newItem = 'GIFT_C';
-                    if (STATE.handX < 0.34 && STATE.handY <= 0.5) newItem = 'GIFT_R';
+                    if (STATE.handX < 0.45 && STATE.handY <= 0.5) newItem = 'GIFT_R';
                     else if (STATE.handX < 0.5 && STATE.handY > 0.5) newItem = 'LETTER_2';
-                    else if (STATE.handX < 0.67 && STATE.handY <= 0.5) newItem = 'GIFT_C';
+                    else if (STATE.handX < 0.57 && STATE.handY <= 0.5) newItem = 'GIFT_C';
                     else if (STATE.handX >= 0.5 && STATE.handY > 0.5) newItem = 'LETTER_1';
                     else newItem = 'GIFT_L';
 
@@ -479,82 +519,181 @@
         cam.start().then(()=>document.getElementById('loading').style.display='none');
 
         // ==========================================
+
+        // ==========================================
+        // 🎵 CẤU HÌNH NHẠC NỀN (AUDIO CONTROL)
+        // ==========================================
+        // 1. Khai báo link nhạc (Bạn thay link của bạn vào đây)
+        const bgMusic = new Audio('https://raw.githubusercontent.com/Tuna195/merryChristmas2025/refs/heads/main/Christmas%20is%20Coming%20-%20Written%20Duc%2C%20Beat%20Jake%20Angel%20(Lyrics%20%2B%20Vietsub).mp3');
+
+        // 2. Cấu hình cơ bản
+        bgMusic.loop = true;   // Tự động phát lại khi hết bài
+        bgMusic.volume = 0.5;  // Âm lượng vừa phải (0.0 đến 1.0)
+
+        // 3. Chống Crash: Nếu link lỗi, chỉ báo log và không làm gì cả
+        bgMusic.onerror = function() {
+            console.warn("⚠️ Link nhạc bị lỗi hoặc không truy cập được. Đã bỏ qua nhạc.");
+            // Không gọi lệnh alert hay throw error để tránh làm phiền trải nghiệm
+        };
+
+        // 4. Xử lý Phím tắt (Space: Pause/Play, R: Replay)
+        document.addEventListener('keydown', function(e) {
+            // Phím SPACE (Dấu cách)
+            if (e.code === 'Space') {
+                e.preventDefault(); // Ngăn trang web bị cuộn xuống
+                if (bgMusic.paused) {
+                    // Dùng .catch để tránh lỗi nếu trình duyệt chặn
+                    bgMusic.play().catch(() => console.log("Chưa thể phát nhạc (chặn auto-play)"));
+                    console.log("▶️ Music Resumed");
+                } else {
+                    bgMusic.pause();
+                    console.log("II Music Paused");
+                }
+            }
+            
+            // Phím R (Restart)
+            if (e.code === 'KeyR') {
+                bgMusic.currentTime = 0; // Tua về 0
+                bgMusic.play().catch(() => {});
+                console.log("🔄 Music Restarted");
+            }
+        });
+
+        // 5. Thử tự động phát (Auto-play)
+        // Lưu ý: Trình duyệt (Chrome/Edge) thường chặn tự phát nếu chưa click chuột.
+        // Code này sẽ thử phát, nếu thất bại sẽ chờ cú click đầu tiên của bạn.
+        bgMusic.play().catch(error => {
+            console.log("⏳ Trình duyệt chặn tự phát. Đang chờ người dùng tương tác...");
+            // Lắng nghe cú click đầu tiên vào màn hình để bắt đầu nhạc
+            window.addEventListener('click', function() {
+                if (bgMusic.paused) {
+                    bgMusic.play();
+                }
+            }, { once: true }); // Chỉ chạy 1 lần duy nhất
+        });
+        // ==========================================
+
+        // =============================================
         // 5. ANIMATION LOOP
         // ==========================================
         function animate() {
             requestAnimationFrame(animate);
 
-            // 1. Xoay Camera nhẹ
-            let targetRot = 0;
+            // 1. Xoay Camera/Object (ĐÃ SỬA: TỰ XOAY KHI KHÔNG CÓ TAY)
             const showHologram = (STATE.isPinching && (Date.now() - STATE.pinchStartTime > 1500));
-            if (!showHologram && STATE.handDetected) targetRot = (STATE.handX - 0.5) * 2; 
-            else if (!STATE.handDetected) targetRot = treeGroup.rotation.y + 0.002;
             
-            treeGroup.rotation.y += (targetRot - treeGroup.rotation.y) * 0.05;
+            if(showHologram){
+                // TRƯỜNG HỢP 1: ĐANG MỞ QUÀ -> Bắt buộc xoay về chính diện (0)
+                // Số 0.1 là tốc độ xoay về giữa (nhanh hơn bình thường chút cho mượt)
+                treeGroup.rotation.y += (0 - treeGroup.rotation.y) * 0.1;
+            }
+            else if (STATE.handDetected) {
+                // TRƯỜNG HỢP 2 CÓ TAY:
+                
+                // Nếu chưa mở quà -> Xoay cây theo vị trí tay (trái/phải)
+                // (STATE.handX - 0.5) * 2 giúp xoay từ -1 đến 1 radian
+                let targetRot = (STATE.handX - 0.5) * 2;
+                // Dùng công thức này để camera lướt theo tay mượt mà (không bị giật)
+                treeGroup.rotation.y += (targetRot - treeGroup.rotation.y) * 0.05;
+                
+                
+            } else {
+                // TRƯỜNG HỢP KHÔNG CÓ TAY:
+                // Tự động xoay tròn đều
+                treeGroup.rotation.y += 0.003; // Tăng số này nếu muốn xoay nhanh hơn (vd: 0.01)
+            }
+
             star.material.rotation -= 0.05;
 
             // 2. Logic Điều khiển Hạt
             let morphSpeed = 0.08;
             const pp = particles.geometry.attributes.position.array;
-            const cc = particles.geometry.attributes.color.array; // [MỚI] Lấy mảng màu hiện tại
-            let activeTargetColor = null;
+            const cc = particles.geometry.attributes.color.array;
+            let activeTargetColor = null; 
+
+            // --- CẬP NHẬT TUYẾT RƠI (Chỉ cập nhật dữ liệu gốc posTree) ---
+            // Chỉ làm tuyết rơi nếu KHÔNG phải đang hiển thị ẢNH (Vì ảnh cần hạt đứng yên để xếp hình)
+            const isShowingPhoto = (STATE.activeItem && STATE.activeItem.includes('LETTER') && STATE.isPinching && (Date.now() - STATE.pinchStartTime > 1500));
+            
+            if (!isShowingPhoto) {
+                for(let i = snowStartIndex; i < particleCount; i++) {
+                    // Cho hạt rơi xuống (giảm Y)
+                    posTree[i*3+1] -= 0.15; // Tốc độ rơi
+                    
+                    // Nếu rơi thấp quá (-50) thì đưa lên đỉnh lại (50)
+                    if(posTree[i*3+1] < -50) {
+                        posTree[i*3+1] = 50;
+                    }
+                }
+            }
+
             function getTarget(idx) {
                 // 1. Xử lý HOLOGRAM (Ưu tiên cao nhất)
                 if (STATE.handDetected && STATE.isPinching && (Date.now() - STATE.pinchStartTime > 1500)) {
-                    // [MỚI] Gán mảng màu đích khi hiển thị ảnh
+                    
                     if(STATE.activeItem === 'LETTER_1') activeTargetColor = colTargetLetter1;
                     else if(STATE.activeItem === 'LETTER_2') activeTargetColor = colTargetLetter2;
-                    else activeTargetColor = baseColors; // Các text giữ màu gốc hoặc có thể làm màu riêng nếu muốn
+                    else if(STATE.activeItem === 'GIFT_L') activeTargetColor = colTargetGiftL;
+                    else if(STATE.activeItem === 'GIFT_C') activeTargetColor = colTargetGiftC;
+                    else if(STATE.activeItem === 'GIFT_R') activeTargetColor = colTargetGiftR;
+                    else activeTargetColor = baseColors;
 
                     switch(STATE.activeItem) {
-                        case 'GIFT_L': return posTargetGiftL;
-                        case 'LETTER_1': return posTargetLetter1;
-                        case 'GIFT_C': return posTargetGiftC;
-                        case 'LETTER_2': return posTargetLetter2;
-                        case 'GIFT_R': return posTargetGiftR;
+                        case 'GIFT_L': 
+                        case 'GIFT_C': 
+                        case 'GIFT_R': 
+                            // RIÊNG VỚI QUÀ (CHỮ):
+                            // Nếu hạt này thuộc về nhóm Tuyết (idx >= snowStartIndex) -> Cho nó tiếp tục rơi (trả về posTree)
+                            // Nếu hạt này thuộc về Text (được dùng trong Text) -> Nó sẽ bay về vị trí Text (do logic bên dưới xử lý)
+                            // Tuy nhiên, Text chỉ dùng vài nghìn hạt đầu, hạt tuyết ở cuối dãy.
+                            if (idx >= snowStartIndex) return posTree; // Tuyết vẫn rơi
+                            
+                            // Trả về vị trí chữ tương ứng
+                            if (STATE.activeItem === 'GIFT_L') return posTargetGiftL;
+                            if (STATE.activeItem === 'GIFT_C') return posTargetGiftC;
+                            return posTargetGiftR;
+
+                        case 'LETTER_1': return posTargetLetter1; // Ảnh cần tất cả hạt
+                        case 'LETTER_2': return posTargetLetter2; // Ảnh cần tất cả hạt
                         default: return posTree;
                     }
                 }
+                
+                activeTargetColor = null; 
 
-                activeTargetColor = null;
-
-                // 2. Xử lý NỔ VẬT PHẨM (Khi đang chạm vào nhưng chưa mở)
+                // 2. Xử lý NỔ VẬT PHẨM
                 if (STATE.handDetected && STATE.isPinching && STATE.activeItem) {
                     const range = STATE.itemRanges[STATE.activeItem.toLowerCase()];
                     if (range && idx >= range[0] && idx <= range[1]) {
-                        return posSphere; // Hạt vật phẩm bay về dạng cầu
+                        return posSphere; 
                     }
                 }
 
-                // 3. LOGIC CHÍNH: MỞ TAY LÀ CÂY - NẮM TAY LÀ CẦU
+                // 3. LOGIC CHÍNH
                 if (STATE.handDetected && STATE.isHandOpen) {
-                    STATE.lastMode = 'TREE'; // Cập nhật trạng thái cuối
-                    return posTree; // Tay mở -> Hiện Cây
+                    STATE.lastMode = 'TREE'; 
+                    return posTree; 
                 }
 
-                // 4. Mặc định (Không tay hoặc Nắm tay) -> Cầu
                 if(STATE.lastMode === 'TREE') return posTree;
                 return posSphere; 
             }
 
             for(let i=0; i<particleCount; i++) {
                 const ix=i*3, iy=i*3+1, iz=i*3+2;
-                const t = getTarget(i);
-                // 1. Di chuyển vị trí
+                const t = getTarget(i); 
+                
                 pp[ix] += (t[ix] - pp[ix]) * morphSpeed;
                 pp[iy] += (t[iy] - pp[iy]) * morphSpeed;
                 pp[iz] += (t[iz] - pp[iz]) * morphSpeed;
 
-                // 2. [MỚI] Biến đổi màu sắc
-                // Nếu đang hiện ảnh (activeTargetColor có dữ liệu) -> Biến về màu ảnh
-                // Nếu không -> Biến về màu gốc (baseColors)
                 const targetC = activeTargetColor ? activeTargetColor : baseColors;
-
-                cc[ix] += (targetC[ix] - cc[ix]) * morphSpeed;     // R
-                cc[iy] += (targetC[iy] - cc[iy]) * morphSpeed;     // G
-                cc[iz] += (targetC[iz] - cc[iz]) * morphSpeed;     // B
-
+                cc[ix] += (targetC[ix] - cc[ix]) * morphSpeed;     
+                cc[iy] += (targetC[iy] - cc[iy]) * morphSpeed;    
+                cc[iz] += (targetC[iz] - cc[iz]) * morphSpeed;     
             }
+
+            
             particles.geometry.attributes.position.needsUpdate = true;
             particles.geometry.attributes.color.needsUpdate = true; // [MỚI] Bắt buộc có dòng này để cập nhật màu
 
@@ -565,7 +704,7 @@
 
             // 4. Sao
             const isHologram = (STATE.isPinching && (Date.now() - STATE.pinchStartTime > 1500));
-            const showStar = (STATE.handDetected && !isHologram && STATE.isHandOpen);
+            const showStar = (!isHologram && STATE.lastMode === 'TREE');
             const sScale = showStar ? 7.0 : 0.0;
             star.scale.setScalar(THREE.MathUtils.lerp(star.scale.x, sScale, 0.1));
             star.material.opacity = THREE.MathUtils.lerp(star.material.opacity, showStar?1:0, 0.1);
