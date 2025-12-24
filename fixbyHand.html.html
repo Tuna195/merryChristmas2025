@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Phase 5: Letters & Photos</title>
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #050505; }
+        canvas { display: block; }
+        .input_video { display: none; }
+
+        /* UI */
+        #ui-layer {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; display: flex; flex-direction: column; justify-content: space-between;
+            z-index: 10;
+        }
+        #status-bar {
+            padding: 10px; color: #00ff00; font-family: monospace; 
+            background: rgba(0,0,0,0.6); font-size: 14px; text-align: center;
+        }
+        #instructions {
+            padding: 20px; color: #fff; font-family: 'Segoe UI', sans-serif; 
+            text-align: center; text-shadow: 0 0 10px #00aaff; font-weight: bold; opacity: 0.9;
+        }
+        .key-guide { font-size: 1.3rem; margin-bottom: 8px; }
+        .sub-guide { font-size: 1rem; color: #ddd; }
+        
+        /* Loading */
+        #loading {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #000; color: #fff; display: flex; justify-content: center; align-items: center;
+            z-index: 999; font-family: sans-serif; flex-direction: column;
+        }
+        .spinner {
+            width: 50px; height: 50px; border: 4px solid #333; border-top: 4px solid #00ff00;
+            border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 20px;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <div id="loading">
+        <div class="spinner"></div>
+        <h2>Đang khởi động AI & Tải ảnh...</h2>
+        <p>Vui lòng cấp quyền Camera</p>
+    </div>
+
+    <div id="ui-layer">
+        <div id="status-bar">🔴 Đang tìm tay...</div>
+        <div id="instructions">
+            <div class="key-guide">🖐️ XÒE TAY: Hiện Cây | ✊ NẮM TAY: Hóa Cầu</div>
+            <div class="sub-guide">👌 DI CHUYỂN tay qua lại để chọn QUÀ hoặc THƯ</div>
+            <div class="sub-guide" style="font-size: 0.9rem; color: #aaa; margin-top:5px;">(Giữ ngón tay 1.5s để mở)</div>
+        </div>
+    </div>
+
+    <video class="input_video" playsinline></video>
+    <div id="canvas-container"></div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script>
+        // ==========================================
+        // 1. CẤU HÌNH TRẠNG THÁI
+        // ==========================================
+        const STATE = {
+            handDetected: false,
+            handX: 0.5,
+            handY: 0.5,
+            isPinching: false,
+            activeItem: null, // 'GIFT_L', 'LETTER_1', 'GIFT_C', 'LETTER_2', 'GIFT_R'
+            pinchStartTime: 0,
+            isHandOpen: false,
+            // Lưu phạm vi index của các hạt (để làm hiệu ứng nổ riêng lẻ)
+            itemRanges: {
+                gift_l: [0, 0],
+                letter_1: [0, 0],
+                gift_c: [0, 0],
+                letter_2: [0, 0],
+                gift_r: [0, 0]
+            },
+            lastMode: 'SPHERE',
+        };
+        let hoverStartTime = 0;       // Thời điểm bắt đầu chạm
+        let currentHoverIndex = -1;   // Đang chạm vào món quà nào (index)
+        const HOVER_DELAY = 1500;     // 1.5 giây (tính bằng mili giây)
+
+        const scene = new THREE.Scene();
+        scene.background = new THREE.Color(0x050505);
+        scene.fog = new THREE.FogExp2(0x050505, 0.015);
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth/window.innerHeight, 0.1, 1000);
+        camera.position.set(0, 2, 45); // Camera lùi xa chút để nhìn bao quát
+
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(window.devicePixelRatio);
+        document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+        const treeGroup = new THREE.Group();
+        treeGroup.position.y = 3;
+        scene.add(treeGroup);
+
+        // ==========================================
+        // 2. TẠO HOLOGRAM TỪ TEXT & ẢNH
+        // ==========================================
+        // Hàm tạo text (như cũ)
+        function createTextPositions(text, pCount, isHeart = false) {
+            const canvas = document.createElement('canvas');
+            const size = 1024; canvas.width = size; canvas.height = size;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#000000'; ctx.fillRect(0,0,size,size);
+            ctx.fillStyle = '#ffffff'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+            
+            if (isHeart) {
+                ctx.font = '800px sans-serif'; ctx.fillText('♥', size/2, size/2 + 50);
+            } else {
+                ctx.font = 'bold 150px Arial';
+                if (text.includes("XMAS")) {
+                    ctx.fillText("MERRY", size/2, size/2 - 70); ctx.fillText("CHRISTMAS", size/2, size/2 + 80);
+                } else {
+                    ctx.fillText(text, size/2, size/2);
+                }
+            }
+            return scanPixelsAndColors(ctx, size, pCount);
+        }
+
+        // Hàm tạo vị trí + MÀU SẮC từ URL Ảnh (ĐÃ SỬA)
+        function createImagePositions(url, pCount, targetPosArray, targetColArray) {
+            const img = new Image();
+            img.crossOrigin = "Anonymous";
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const size = 1024; canvas.width = size; canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                ctx.fillStyle = '#000000'; ctx.fillRect(0,0,size,size);
+                
+                const scale = Math.min(size/img.width, size/img.height);
+                const w = img.width * scale;
+                const h = img.height * scale;
+                ctx.drawImage(img, (size-w)/2, (size-h)/2, w, h);
+
+                // Lấy cả vị trí và màu
+                const data = scanPixelsAndColors(ctx, size, pCount);
+                
+                // Copy sang mảng đích
+                for(let i=0; i<pCount; i++) {
+                    // Copy vị trí
+                    targetPosArray[i*3]   = data.positions[i*3];
+                    targetPosArray[i*3+1] = data.positions[i*3+1];
+                    targetPosArray[i*3+2] = data.positions[i*3+2];
+                    
+                    // Copy màu (Nếu ảnh có màu thì lấy, không thì mặc định trắng)
+                    targetColArray[i*3]   = data.colors[i*3];   // R
+                    targetColArray[i*3+1] = data.colors[i*3+1]; // G
+                    targetColArray[i*3+2] = data.colors[i*3+2]; // B
+                }
+                console.log("Đã load ảnh màu xong:", url);
+            };
+            img.src = url;
+        }
+
+        // Hàm quét pixel lấy cả vị trí và màu RGB
+        function scanPixelsAndColors(ctx, size, pCount) {
+            const imgData = ctx.getImageData(0,0,size,size);
+            const pixels = [];
+            for(let i=0; i<size; i+=6) { // Bước nhảy nhỏ (6) để lấy nhiều chi tiết hơn
+                for(let j=0; j<size; j+=6) {
+                    const idx = (i*size + j) * 4;
+                    const r = imgData.data[idx] / 255;
+                    const g = imgData.data[idx+1] / 255;
+                    const b = imgData.data[idx+2] / 255;
+                    const brightness = (r+g+b)/3;
+
+                    if(brightness > 0.1) { // Lấy các điểm có độ sáng > 10%
+                        pixels.push({
+                            x: (j/size - 0.5) * 45,
+                            y: -(i/size - 0.5) * 45,
+                            c: {r: r, g: g, b: b} // Lưu màu
+                        });
+                    }
+                }
+            }
+            
+            const positions = new Float32Array(pCount * 3);
+            const colors = new Float32Array(pCount * 3);
+
+            for(let i=0; i<pCount; i++) {
+                const p = pixels[i % pixels.length] || {x:0, y:0, c:{r:1, g:1, b:1}}; 
+                // Vị trí
+                positions[i*3] = p.x + (Math.random()-0.5)*0.3;
+                positions[i*3+1] = p.y + (Math.random()-0.5)*0.3;
+                positions[i*3+2] = (Math.random()-0.5) * 2; 
+                // Màu sắc
+                colors[i*3] = p.c.r;
+                colors[i*3+1] = p.c.g;
+                colors[i*3+2] = p.c.b;
+            }
+            return { positions, colors };
+        }
+
+        // ==========================================
+        // ==========================================
+        // 3. TẠO HẠT & DATA (ĐÃ SỬA LỖI & THÊM MÀU)
+        // ==========================================
+        const particleCount = 45000; 
+        const geometry = new THREE.BufferGeometry();
+        const positions = new Float32Array(particleCount * 3);
+        const colors = [];
+
+        // Mảng vị trí cơ bản
+        const posSphere = new Float32Array(particleCount * 3);
+        const posTree = new Float32Array(particleCount * 3);
+        
+        // Mảng màu gốc (để lưu màu cây thông)
+        const baseColors = new Float32Array(particleCount * 3);
+
+        // Helper: Lấy cả vị trí và màu từ text
+        function initTextData(text, count, isHeart) {
+            // Lưu ý: Đảm bảo bạn đã sửa hàm createTextPositions ở Bước 1 trước đó
+            const data = createTextPositions(text, count, isHeart); 
+            return { pos: data.positions, col: data.colors };
+        }
+
+        // --- 1. KHỞI TẠO DỮ LIỆU CÁC VẬT PHẨM ---
+        
+        // Quà Trái (GIFT_L)
+        const dGiftL = initTextData("I LOVE YOU", particleCount, false);
+        const posTargetGiftL = dGiftL.pos;
+        const colTargetGiftL = dGiftL.col;
+
+        // Quà Giữa (GIFT_C)
+        const dGiftC = initTextData("MERRY XMAS", particleCount, false);
+        const posTargetGiftC = dGiftC.pos;
+        const colTargetGiftC = dGiftC.col;
+
+        // Quà Phải (GIFT_R - Heart)
+        const dGiftR = initTextData("", particleCount, true);
+        const posTargetGiftR = dGiftR.pos;
+        const colTargetGiftR = dGiftR.col;
+        
+        // Thư 1 & 2 (LETTER - Ảnh) -> Khởi tạo mảng rỗng trước
+        const posTargetLetter1 = new Float32Array(particleCount * 3); 
+        const colTargetLetter1 = new Float32Array(particleCount * 3);
+
+        const posTargetLetter2 = new Float32Array(particleCount * 3);
+        const colTargetLetter2 = new Float32Array(particleCount * 3);
+
+        // --- 2. XỬ LÝ FALLBACK & LOAD ẢNH ---
+        
+        // Copy dữ liệu mặc định (tránh lỗi khi ảnh chưa tải xong)
+        // Lấy form của Quà Giữa làm mặc định
+        for(let i=0; i<particleCount*3; i++) {
+            // Copy vị trí
+            posTargetLetter1[i] = posTargetGiftC[i];
+            posTargetLetter2[i] = posTargetGiftC[i];
+            
+            // Mặc định màu trắng cho ảnh khi chưa load
+            colTargetLetter1[i] = 1.0; 
+            colTargetLetter2[i] = 1.0;
+        }
+
+        // LOAD ẢNH (Thay link ảnh của bạn vào đây)
+        const imgUrl1 = "https://images.unsplash.com/photo-1543589077-47d81606c1bf?ixlib=rb-4.0.3&auto=format&fit=crop&w=600&q=80"; 
+        const imgUrl2 = "https://raw.githubusercontent.com/Tuna195/merryChristmas2025/f5ceb00e1d04d04d2bf4835b5be63dcc6b2edf7d/anhchristmas.jpg"; 
+
+        // Gọi hàm load ảnh mới (có truyền mảng màu)
+        createImagePositions(imgUrl1, particleCount, posTargetLetter1, colTargetLetter1);
+        createImagePositions(imgUrl2, particleCount, posTargetLetter2, colTargetLetter2);
+
+
+        // --- 3. TẠO HẠT BAN ĐẦU (ADD POINT) ---
+        let pIdx = 0;
+        const C = {
+            white: new THREE.Color(0xffffff), gold: new THREE.Color(0xffcc00),
+            red: new THREE.Color(0xff0033), green: new THREE.Color(0x00aa00),
+            blue: new THREE.Color(0x0088ff), tree: new THREE.Color(0x004400),
+            brown: new THREE.Color(0x8B4513), orange: new THREE.Color(0xff6600),
+            paper: new THREE.Color(0xffffee)
+        };
+
+        function addPoint(x, y, z, col) {
+            // Vị trí Cây
+            posTree[pIdx*3] = x; posTree[pIdx*3+1] = y; posTree[pIdx*3+2] = z;
+            
+            // Vị trí Cầu (Mặc định)
+            const u=Math.random(), v=Math.random();
+            const th=2*Math.PI*u, ph=Math.acos(2*v-1);
+            const r=20+Math.random()*15;
+            posSphere[pIdx*3] = r*Math.sin(ph)*Math.cos(th);
+            posSphere[pIdx*3+1] = r*Math.sin(ph)*Math.sin(th);
+            posSphere[pIdx*3+2] = r*Math.cos(ph);
+
+            // Gán vị trí ban đầu
+            positions[pIdx*3] = posSphere[pIdx*3];
+            positions[pIdx*3+1] = posSphere[pIdx*3+1];
+            positions[pIdx*3+2] = posSphere[pIdx*3+2];
+
+            // Gán màu
+            colors.push(col.r, col.g, col.b);
+            
+            pIdx++;
+        }
+
+        // --- 4. VẼ CÁC ĐỐI TƯỢNG (Cây, Người tuyết...) ---
+        
+        // Cây thông
+        for(let i=0;i<24000;i++){
+            const y=(Math.random()*40)-20, r=((20-y)/3)*1.32, a=Math.random()*Math.PI*2, rad=Math.random()*r;
+            const rnd=Math.random(); let c;
+            if(rnd<0.05) c=C.red.clone().multiplyScalar(1.5);
+            else if(rnd<0.6) c=(Math.random()>0.5?C.gold:new THREE.Color(0xff5500)).clone().multiplyScalar(1.2);
+            else if(rnd<0.9) c=C.white; else c=C.tree;
+            addPoint(rad*Math.cos(a), y*1.1, rad*Math.sin(a), c);
+        }
+
+        // Người tuyết
+        const smX=14, smZ=5, smYBase=-20;
+        for(let i=0;i<2500;i++){ 
+            const p=Math.random(); let r,cy; if(p<0.45){r=3.5;cy=smYBase+3;}else if(p<0.8){r=2.5;cy=smYBase+7.5;}else{r=1.8;cy=smYBase+11;}
+            const u=Math.random(),v=Math.random(),th=2*Math.PI*u,ph=Math.acos(2*v-1), rad=r*(0.8+Math.random()*0.2);
+            addPoint(smX+rad*Math.sin(ph)*Math.cos(th), cy+rad*Math.sin(ph)*Math.sin(th), smZ+rad*Math.cos(ph), C.white);
+        }
+        // Tay người tuyết
+        for(let side=-1; side<=1; side+=2) { 
+            for(let i=0; i<200; i++) { 
+                const t=i/200, sx=smX+side*2.5, sy=smYBase+8, sz=smZ, ex=smX+side*6, ey=smYBase+10, ez=smZ+1;
+                const j=()=>(Math.random()-0.5)*0.3;
+                addPoint(THREE.MathUtils.lerp(sx,ex,t)+j(), THREE.MathUtils.lerp(sy,ey,t)+j(), THREE.MathUtils.lerp(sz,ez,t)+j(), C.brown);
+            }
+        }
+        // Mũi người tuyết
+        for(let i=0;i<150;i++){ 
+            const t=Math.random(), h=t*1.5, r=(1-t)*0.3, a=Math.random()*Math.PI*2, rad=Math.random()*r;
+            addPoint(smX+rad*Math.cos(a), smYBase+11+rad*Math.sin(a), smZ+1.8+h, C.orange);
+        }
+
+        // --- 5. TẠO HẠT CHO VẬT PHẨM ---
+        // (Để tạo hiệu ứng các hạt vật phẩm bay về cầu khi chạm)
+        
+        function addGift(key, gx, gz, s, c, cnt) {
+            const start = pIdx;
+            const gy=-20+s/2;
+            for(let i=0;i<cnt;i++){
+                let fx=(Math.random()-0.5)*s, fy=(Math.random()-0.5)*s, fz=(Math.random()-0.5)*s;
+                if(Math.random()>0.2){const ax=Math.floor(Math.random()*3); if(ax==0)fx=s/2*(Math.random()>0.5?1:-1);else if(ax==1)fy=s/2*(Math.random()>0.5?1:-1);else fz=s/2*(Math.random()>0.5?1:-1);}
+                addPoint(gx+fx, gy+fy, gz+fz, c);
+            }
+            STATE.itemRanges[key] = [start, pIdx - 1];
+        }
+
+        function addLetter(key, lx, lz, w, h, cnt) {
+            const start = pIdx;
+            const ly = -19.5;
+            for(let i=0; i<cnt; i++) {
+                const dx = (Math.random()-0.5)*w;
+                const dz = (Math.random()-0.5)*h;
+                addPoint(lx+dx, ly + (Math.random()*0.5), lz+dz, C.paper);
+                if(i < cnt/10) addPoint(lx+(Math.random()-0.5)*1, ly+0.6, lz+(Math.random()-0.5)*1, C.red);
+            }
+            STATE.itemRanges[key] = [start, pIdx - 1];
+        }
+
+        // Sắp xếp vật phẩm
+        addGift('gift_l', -12, 0, 4, C.green, 1200);
+        addLetter('letter_1', -7, 4, 5, 3.5, 1200);
+        addGift('gift_c', -2, 10, 3.5, C.red, 1200);
+        addLetter('letter_2', 4, 5, 5, 3.5, 1200);
+        addGift('gift_r', 10, 8, 4, C.blue, 1200);
+
+
+        // --- 4. Châu (Ornaments) - ĐIỀU CHỈNH: Rải đều hơn ---
+        for(let k=0;k<35;k++){ // Tăng số lượng chùm
+            // Điều chỉnh oy: Từ -15 (gần gốc) lên đến 15 (ngọn)
+            const oy=Math.random()*30 - 15; 
+            const or=((20-oy)/3)*1.1; // Bán kính vòng cây tại độ cao đó
+            const oa=Math.random()*Math.PI*2; 
+            const ox=Math.cos(oa)*or, oz=Math.sin(oa)*or;
+            
+            for(let i=0;i<80;i++){
+                const u=Math.random(),v=Math.random(),th=2*Math.PI*u,ph=Math.acos(2*v-1),rad=0.6*Math.random();
+                addPoint(ox+rad*Math.sin(ph)*Math.cos(th), oy+rad*Math.sin(ph)*Math.sin(th), oz+rad*Math.cos(ph), (Math.random()>0.5?C.gold:C.red).clone().multiplyScalar(1.5));
+            }
+        }
+
+        // Setup Geometry
+        geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+        geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+        // [MỚI] Lưu lại màu gốc của cây thông vào mảng baseColors
+        for(let i=0; i<colors.length; i++) {
+            baseColors[i] = colors[i];
+        }
+        function getTex(){const c=document.createElement('canvas');c.width=32;c.height=32;const ctx=c.getContext('2d');const g=ctx.createRadialGradient(16,16,0,16,16,16);g.addColorStop(0,'rgba(255,255,255,1)');g.addColorStop(1,'rgba(0,0,0,0)');ctx.fillStyle=g;ctx.fillRect(0,0,32,32);return new THREE.CanvasTexture(c);}
+        const particles = new THREE.Points(geometry, new THREE.PointsMaterial({
+            size: 0.45, map: getTex(), vertexColors: true, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false
+        }));
+        treeGroup.add(particles);
+
+        // --- Sao & Tuyết ---
+        function getStarTex(){const c=document.createElement('canvas');c.width=128;c.height=128;const ctx=c.getContext('2d');const g=ctx.createRadialGradient(64,64,10,64,64,60);g.addColorStop(0,'#ffd700');g.addColorStop(1,'rgba(0,0,0,0)');ctx.fillStyle=g;ctx.fillRect(0,0,128,128);ctx.beginPath();ctx.moveTo(64,29);for(let i=0;i<10;i++){let r=i%2==0?35:16;ctx.lineTo(64+r*Math.cos(Math.PI/2*3+i*Math.PI/5),64+r*Math.sin(Math.PI/2*3+i*Math.PI/5));}ctx.closePath();ctx.fillStyle='#ffff00';ctx.fill();return new THREE.CanvasTexture(c);}
+        const star = new THREE.Sprite(new THREE.SpriteMaterial({map:getStarTex(),color:0xffffff,blending:THREE.AdditiveBlending,depthWrite:false}));
+        star.position.set(0, 23, 0); star.scale.set(7, 7, 1); treeGroup.add(star);
+
+        const snowCnt=2500, snPos=new Float32Array(snowCnt*3), snVel=[];
+        for(let i=0;i<snowCnt;i++){snPos[i*3]=(Math.random()-0.5)*150;snPos[i*3+1]=(Math.random()-0.5)*100;snPos[i*3+2]=(Math.random()-0.5)*150;snVel.push(0.05+Math.random()*0.15);}
+        const snowGeo=new THREE.BufferGeometry(); snowGeo.setAttribute('position',new THREE.BufferAttribute(snPos,3));
+        scene.add(new THREE.Points(snowGeo, new THREE.PointsMaterial({color:0xffffff,size:0.3,transparent:true,opacity:0.5,map:getTex(),depthWrite:false})));
+
+        // ==========================================
+        // 4. AI HAND TRACKING (CẬP NHẬT 5 VÙNG)
+        // ==========================================
+        const videoElement = document.querySelector('.input_video');
+        const statusBar = document.getElementById('status-bar');
+
+        const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
+        hands.setOptions({maxNumHands:1, modelComplexity:1, minDetectionConfidence:0.7, minTrackingConfidence:0.7});
+
+        hands.onResults(results => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                STATE.handDetected = true;
+                const lm = results.multiHandLandmarks[0];
+                STATE.handX = lm[9].x; 
+                STATE.handY = lm[9].y;
+
+                // Mở/Nắm
+                const wrist=lm[0]; let ext=0; [8,12,16,20].forEach(t=>{if(Math.sqrt(Math.pow(lm[t].x-wrist.x,2)+Math.pow(lm[t].y-wrist.y,2))>0.25)ext++;});
+                const isHandOpen = (ext >= 3);
+                // Cập nhật trạng thái bền vững (để nhớ khi bỏ tay ra)
+                if (isHandOpen) {
+                    STATE.lastMode = 'TREE'; // Xòe tay -> Nhớ là Cây
+                } else {
+                    STATE.lastMode = 'SPHERE'; // Nắm tay -> Nhớ là Cầu
+                }
+                // Pinch
+                const dist = Math.sqrt(Math.pow(lm[4].x-lm[8].x,2) + Math.pow(lm[4].y-lm[8].y,2));
+                const currentlyPinching = (dist < 0.05);
+                STATE.isHandOpen = isHandOpen;
+                if (currentlyPinching && isHandOpen) {
+                    // CHIA 5 VÙNG (0.0 -> 1.0)
+                    let newItem = 'GIFT_C';
+                    if (STATE.handX < 0.34 && STATE.handY <= 0.5) newItem = 'GIFT_R';
+                    else if (STATE.handX < 0.5 && STATE.handY > 0.5) newItem = 'LETTER_2';
+                    else if (STATE.handX < 0.67 && STATE.handY <= 0.5) newItem = 'GIFT_C';
+                    else if (STATE.handX >= 0.5 && STATE.handY > 0.5) newItem = 'LETTER_1';
+                    else newItem = 'GIFT_L';
+
+                    if (STATE.activeItem !== newItem) {
+                        STATE.activeItem = newItem;
+                        STATE.pinchStartTime = Date.now();
+                    }
+                    STATE.isPinching = true;
+                } else {
+                    STATE.isPinching = false;
+                    STATE.activeItem = null;
+                    STATE.pinchStartTime = 0;
+                }
+
+                // UI Label
+                let nameMap = {
+                    'GIFT_L': 'QUÀ TRÁI (TEXT)', 'LETTER_1': 'THƯ 1 (ẢNH)', 
+                    'GIFT_C': 'QUÀ GIỮA (TEXT)', 'LETTER_2': 'THƯ 2 (ẢNH)', 'GIFT_R': 'QUÀ PHẢI (HEART)'
+                };
+                statusBar.innerText = `🟢 TAY: ${isHandOpen?"MỞ":"NẮM"} | CHỌN: ${nameMap[STATE.activeItem]||"--"} | GIỮ: ${STATE.isPinching ? ((Date.now()-STATE.pinchStartTime)/1000).toFixed(1)+"s" : "0"}`;
+
+            } else {
+                STATE.handDetected = false;
+                STATE.isPinching = false;
+                STATE.activeItem = null;
+                statusBar.innerText = "🔴 Đang tìm tay...";
+            }
+        });
+
+        const cam = new Camera(videoElement, {onFrame:async()=>{await hands.send({image:videoElement});}, width:640, height:480});
+        cam.start().then(()=>document.getElementById('loading').style.display='none');
+
+        // ==========================================
+        // 5. ANIMATION LOOP
+        // ==========================================
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // 1. Xoay Camera nhẹ
+            let targetRot = 0;
+            const showHologram = (STATE.isPinching && (Date.now() - STATE.pinchStartTime > 1500));
+            if (!showHologram && STATE.handDetected) targetRot = (STATE.handX - 0.5) * 2; 
+            else if (!STATE.handDetected) targetRot = treeGroup.rotation.y + 0.002;
+            
+            treeGroup.rotation.y += (targetRot - treeGroup.rotation.y) * 0.05;
+            star.material.rotation -= 0.05;
+
+            // 2. Logic Điều khiển Hạt
+            let morphSpeed = 0.08;
+            const pp = particles.geometry.attributes.position.array;
+            const cc = particles.geometry.attributes.color.array; // [MỚI] Lấy mảng màu hiện tại
+            let activeTargetColor = null;
+            function getTarget(idx) {
+                // 1. Xử lý HOLOGRAM (Ưu tiên cao nhất)
+                if (STATE.handDetected && STATE.isPinching && (Date.now() - STATE.pinchStartTime > 1500)) {
+                    // [MỚI] Gán mảng màu đích khi hiển thị ảnh
+                    if(STATE.activeItem === 'LETTER_1') activeTargetColor = colTargetLetter1;
+                    else if(STATE.activeItem === 'LETTER_2') activeTargetColor = colTargetLetter2;
+                    else activeTargetColor = baseColors; // Các text giữ màu gốc hoặc có thể làm màu riêng nếu muốn
+
+                    switch(STATE.activeItem) {
+                        case 'GIFT_L': return posTargetGiftL;
+                        case 'LETTER_1': return posTargetLetter1;
+                        case 'GIFT_C': return posTargetGiftC;
+                        case 'LETTER_2': return posTargetLetter2;
+                        case 'GIFT_R': return posTargetGiftR;
+                        default: return posTree;
+                    }
+                }
+
+                activeTargetColor = null;
+
+                // 2. Xử lý NỔ VẬT PHẨM (Khi đang chạm vào nhưng chưa mở)
+                if (STATE.handDetected && STATE.isPinching && STATE.activeItem) {
+                    const range = STATE.itemRanges[STATE.activeItem.toLowerCase()];
+                    if (range && idx >= range[0] && idx <= range[1]) {
+                        return posSphere; // Hạt vật phẩm bay về dạng cầu
+                    }
+                }
+
+                // 3. LOGIC CHÍNH: MỞ TAY LÀ CÂY - NẮM TAY LÀ CẦU
+                if (STATE.handDetected && STATE.isHandOpen) {
+                    STATE.lastMode = 'TREE'; // Cập nhật trạng thái cuối
+                    return posTree; // Tay mở -> Hiện Cây
+                }
+
+                // 4. Mặc định (Không tay hoặc Nắm tay) -> Cầu
+                if(STATE.lastMode === 'TREE') return posTree;
+                return posSphere; 
+            }
+
+            for(let i=0; i<particleCount; i++) {
+                const ix=i*3, iy=i*3+1, iz=i*3+2;
+                const t = getTarget(i);
+                // 1. Di chuyển vị trí
+                pp[ix] += (t[ix] - pp[ix]) * morphSpeed;
+                pp[iy] += (t[iy] - pp[iy]) * morphSpeed;
+                pp[iz] += (t[iz] - pp[iz]) * morphSpeed;
+
+                // 2. [MỚI] Biến đổi màu sắc
+                // Nếu đang hiện ảnh (activeTargetColor có dữ liệu) -> Biến về màu ảnh
+                // Nếu không -> Biến về màu gốc (baseColors)
+                const targetC = activeTargetColor ? activeTargetColor : baseColors;
+
+                cc[ix] += (targetC[ix] - cc[ix]) * morphSpeed;     // R
+                cc[iy] += (targetC[iy] - cc[iy]) * morphSpeed;     // G
+                cc[iz] += (targetC[iz] - cc[iz]) * morphSpeed;     // B
+
+            }
+            particles.geometry.attributes.position.needsUpdate = true;
+            particles.geometry.attributes.color.needsUpdate = true; // [MỚI] Bắt buộc có dòng này để cập nhật màu
+
+            // 3. Tuyết rơi
+            const sp = scene.children[scene.children.length-1].geometry.attributes.position.array; 
+            for(let i=0;i<snowCnt;i++){sp[i*3+1]-=snVel[i];if(sp[i*3+1]<-50)sp[i*3+1]=50;}
+            scene.children[scene.children.length-1].geometry.attributes.position.needsUpdate=true;
+
+            // 4. Sao
+            const isHologram = (STATE.isPinching && (Date.now() - STATE.pinchStartTime > 1500));
+            const showStar = (STATE.handDetected && !isHologram && STATE.isHandOpen);
+            const sScale = showStar ? 7.0 : 0.0;
+            star.scale.setScalar(THREE.MathUtils.lerp(star.scale.x, sScale, 0.1));
+            star.material.opacity = THREE.MathUtils.lerp(star.material.opacity, showStar?1:0, 0.1);
+
+            renderer.render(scene, camera);
+        }
+        animate();
+        window.onresize=()=>{camera.aspect=window.innerWidth/window.innerHeight;camera.updateProjectionMatrix();renderer.setSize(window.innerWidth,window.innerHeight);};
+    </script>
+</body>
+</html>
